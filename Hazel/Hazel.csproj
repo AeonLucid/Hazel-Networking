@@ -3,6 +3,7 @@
   <PropertyGroup>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <TargetFrameworks>net452;netcoreapp3.1</TargetFrameworks>
+    <DefineConstants>HAZEL_BAG</DefineConstants>
   </PropertyGroup>
 
 </Project>
