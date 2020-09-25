@@ -6,7 +6,7 @@ using System.Text;
 namespace Hazel
 {
     ///
-    public class MessageWriter : IRecyclable
+    public class MessageWriter : IRecyclable, IDisposable
     {
         public static int BufferSize = 64000;
         public static readonly ObjectPool<MessageWriter> WriterPool = new ObjectPool<MessageWriter>(() => new MessageWriter(BufferSize));
@@ -315,6 +315,11 @@ namespace Hazel
             }
 
             return b == 1;
+        }
+
+        public void Dispose()
+        {
+            Recycle();
         }
     }
 }
