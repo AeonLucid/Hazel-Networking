@@ -191,7 +191,13 @@ namespace Hazel
                 {
                     handler(new DataReceivedEventArgs(this, msg, sendOption));
                 }
-                catch { }
+                catch
+                {
+                }
+                finally
+                {
+                    msg.Recycle();
+                }
             }
             else
             {
