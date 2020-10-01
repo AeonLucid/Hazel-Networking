@@ -1,11 +1,8 @@
-﻿using Hazel.Udp;
-using System;
+﻿using System;
 using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
+using Hazel.Udp;
 
-namespace Hazel.UnitTests
+namespace Hazel.Tests
 {
     internal class UdpConnectionTestHarness : UdpConnection
     {

@@ -1,8 +1,7 @@
-﻿using System;
-using System.IO;
+﻿using System.IO;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 
-namespace Hazel.UnitTests
+namespace Hazel.Tests
 {
     [TestClass]
     public class MessageWriterTests

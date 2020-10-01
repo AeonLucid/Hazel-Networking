@@ -1,13 +1,9 @@
-﻿using System;
+﻿using System.Diagnostics;
+using System.Threading;
+using Hazel.Udp.FewerThreads;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 
-using Hazel;
-using System.Net;
-using System.Threading;
-using System.Diagnostics;
-using Hazel.Udp.FewerThreads;
-
-namespace Hazel.UnitTests
+namespace Hazel.Tests
 {
     [TestClass]
     public static class TestHelper

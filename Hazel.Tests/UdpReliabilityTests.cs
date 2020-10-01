@@ -1,9 +1,7 @@
-﻿using System;
-using System.Collections.Generic;
-using Hazel.Udp;
+﻿using System.Collections.Generic;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 
-namespace Hazel.UnitTests
+namespace Hazel.Tests
 {
     [TestClass]
     public class UdpReliabilityTests

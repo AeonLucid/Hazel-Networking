@@ -2,7 +2,7 @@
 using Hazel.UPnP;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 
-namespace Hazel.UnitTests
+namespace Hazel.Tests
 {
     [TestClass]
     public class UPnPTests

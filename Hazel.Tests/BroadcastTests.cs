@@ -1,11 +1,9 @@
-﻿using Hazel.Udp;
-using Microsoft.VisualStudio.TestTools.UnitTesting;
-using System;
-using System.Linq;
-using System.Net;
+﻿using System;
 using System.Threading;
+using Hazel.Udp;
+using Microsoft.VisualStudio.TestTools.UnitTesting;
 
-namespace Hazel.UnitTests
+namespace Hazel.Tests
 {
     [TestClass]
     public class BroadcastTests

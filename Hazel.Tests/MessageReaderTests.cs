@@ -1,9 +1,6 @@
-﻿using System;
-using System.IO;
-using System.Linq;
-using Microsoft.VisualStudio.TestTools.UnitTesting;
+﻿using Microsoft.VisualStudio.TestTools.UnitTesting;
 
-namespace Hazel.UnitTests
+namespace Hazel.Tests
 {
     [TestClass]
     public class MessageReaderTests

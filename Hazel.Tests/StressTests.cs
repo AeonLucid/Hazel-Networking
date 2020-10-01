@@ -1,11 +1,9 @@
-﻿using System;
-using System.Net;
-using System.Threading;
+﻿using System.Net;
 using System.Threading.Tasks;
 using Hazel.Udp;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 
-namespace Hazel.UnitTests
+namespace Hazel.Tests
 {
     [TestClass]
     public class StressTests
