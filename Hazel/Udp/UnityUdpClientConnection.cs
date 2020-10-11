@@ -21,9 +21,7 @@ namespace Hazel.Udp
             this.EndPoint = remoteEndPoint;
             this.RemoteEndPoint = remoteEndPoint;
             this.IPMode = ipMode;
-
             this.socket = CreateSocket(ipMode);
-            this.socket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ExclusiveAddressUse, true);
         }
         
         ~UnityUdpClientConnection()
