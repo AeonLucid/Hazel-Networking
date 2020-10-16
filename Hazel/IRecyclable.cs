@@ -1,9 +1,4 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-
-namespace Hazel
+﻿namespace Hazel
 {
     /// <summary>
     ///     Interface for all items that can be returned to an object pool.

@@ -1,9 +1,4 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-
-namespace Hazel
+﻿namespace Hazel
 {
     /// <summary>
     ///     Represents the state a <see cref="Connection"/> is currently in.

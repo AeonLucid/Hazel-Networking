@@ -1,10 +1,4 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-
-
-namespace Hazel.Udp
+﻿namespace Hazel.Udp
 {
     /// <summary>
     ///     Extra internal states for SendOption enumeration when using UDP.
