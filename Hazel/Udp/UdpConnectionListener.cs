@@ -1,7 +1,6 @@
 ﻿using System;
 using System.Buffers;
 using System.Collections.Concurrent;
-using System.IO.Pipelines;
 using System.Net;
 using System.Net.Sockets;
 using System.Threading;
@@ -28,7 +27,6 @@ namespace Hazel.Udp
         public delegate bool AcceptConnectionCheck(IPEndPoint endPoint, byte[] input, out byte[] response);
 
         private readonly UdpClient _socket;
-        private readonly int _maxPacketSize;
         private readonly MemoryPool<byte> _pool;
         private readonly Timer _reliablePacketTimer;
         private readonly ConcurrentDictionary<EndPoint, UdpServerConnection> _allConnections;
