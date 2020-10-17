@@ -1,5 +1,9 @@
 ﻿using System;
+using System.Buffers;
+using System.IO.Pipelines;
 using System.Net.Sockets;
+using System.Threading.Tasks;
+using Serilog;
 
 namespace Hazel.Udp
 {
@@ -9,51 +13,101 @@ namespace Hazel.Udp
     /// <inheritdoc />
     public abstract partial class UdpConnection : NetworkConnection
     {
-        private const int SioUdpConnectionReset = -1744830452;
+        protected static readonly byte[] EmptyDisconnectBytes = { (byte)UdpSendOption.Disconnect };
 
-        public static readonly byte[] EmptyDisconnectBytes = new byte[] { (byte)UdpSendOption.Disconnect };
+        private static readonly ILogger Logger = Log.ForContext<UdpConnection>();
+        private readonly ConnectionListener _listener;
 
-        internal static Socket CreateSocket(IPMode ipMode)
+        private bool _isDisposing;
+        private bool _isFirst = true;
+        private Task _executingTask;
+
+        protected UdpConnection(ConnectionListener listener)
         {
-            Socket socket;
-            if (ipMode == IPMode.IPv4)
+            _listener = listener;
+            Pipeline = new Pipe();
+        }
+
+        internal Pipe Pipeline { get; }
+
+        public Task StartAsync()
+        {
+            // Store the task we're executing
+            _executingTask = ReadAsync();
+
+            // If the task is completed then return it, this will bubble cancellation and failure to the caller
+            if (_executingTask.IsCompleted)
             {
-                socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
+                return _executingTask;
             }
-            else
+
+            // Otherwise it's running
+            return Task.CompletedTask;
+        }
+
+        public void Stop()
+        {
+            // Stop called without start
+            if (_executingTask == null)
             {
-                if (!Socket.OSSupportsIPv6)
-                    throw new InvalidOperationException("IPV6 not supported!");
-
-                socket = new Socket(AddressFamily.InterNetworkV6, SocketType.Dgram, ProtocolType.Udp);
-                socket.SetSocketOption(SocketOptionLevel.IPv6, SocketOptionName.IPv6Only, false);
+                return;
             }
 
-            try
+            // Cancel reader.
+            Pipeline.Reader.CancelPendingRead();
+
+            // Remove references.
+            if (!_isDisposing)
             {
-                socket.DontFragment = false;
+                Dispose(true);
             }
-            catch { }
+        }
 
-
-            try
+        private async Task ReadAsync()
+        {
+            while (true)
             {
-                const int SIO_UDP_CONNRESET = -1744830452;
-                socket.IOControl(SIO_UDP_CONNRESET, new byte[1], null);
-            }
-            catch { } // Only necessary on Windows
+                var result = await Pipeline.Reader.ReadAsync();
+                if (result.IsCanceled)
+                {
+                    // The read was canceled.
+                    break;
+                }
 
-            return socket;
+                try
+                {
+                    if (!result.Buffer.IsSingleSegment)
+                    {
+                        Console.WriteLine("Not result.Buffer.IsSingleSegment");
+                    }
+
+                    Console.WriteLine($"{EndPoint}: {result.Buffer.Length} ({result.Buffer.Start.GetInteger()} - {result.Buffer.End.GetInteger()})");
+
+                    await HandleReceive(new MessageReader(result.Buffer.IsSingleSegment
+                        ? result.Buffer.First
+                        : result.Buffer.ToArray()));
+                }
+                catch (Exception e)
+                {
+                    Logger.Error(e, "Exception during ReadAsync");
+                    Dispose(true);
+                    break;
+                }
+                finally
+                {
+                    Pipeline.Reader.AdvanceTo(result.Buffer.End, result.Buffer.End);
+                }
+            }
         }
 
         /// <summary>
         ///     Writes the given bytes to the connection.
         /// </summary>
         /// <param name="bytes">The bytes to write.</param>
-        protected abstract void WriteBytesToConnection(byte[] bytes, int length);
+        protected abstract ValueTask WriteBytesToConnection(byte[] bytes, int length);
 
         /// <inheritdoc/>
-        public override void Send(MessageWriter msg)
+        public override async ValueTask Send(MessageWriter msg)
         {
             if (this._state != ConnectionState.Connected)
                 throw new InvalidOperationException("Could not send data as this Connection is not connected. Did you disconnect?");
@@ -67,12 +121,12 @@ namespace Hazel.Udp
                     ResetKeepAliveTimer();
 
                     AttachReliableID(buffer, 1, buffer.Length);
-                    WriteBytesToConnection(buffer, buffer.Length);
+                    await WriteBytesToConnection(buffer, buffer.Length);
                     Statistics.LogReliableSend(buffer.Length - 3, buffer.Length);
                     break;
 
                 default:
-                    WriteBytesToConnection(buffer, buffer.Length);
+                    await WriteBytesToConnection(buffer, buffer.Length);
                     Statistics.LogUnreliableSend(buffer.Length - 1, buffer.Length);
                     break;
             }
@@ -87,10 +141,10 @@ namespace Hazel.Udp
         ///         <see cref="SendOption.None"/> until implemented.
         ///     </para>
         /// </remarks>
-        public override void SendBytes(byte[] bytes, SendOption sendOption = SendOption.None)
+        public override async ValueTask SendBytes(byte[] bytes, SendOption sendOption = SendOption.None)
         {
             //Add header information and send
-            HandleSend(bytes, (byte)sendOption);
+            await HandleSend(bytes, (byte)sendOption);
         }
         
         /// <summary>
@@ -100,19 +154,19 @@ namespace Hazel.Udp
         /// <param name="sendOption">The <see cref="SendOption"/> specified as its byte value.</param>
         /// <param name="ackCallback">The callback to invoke when this packet is acknowledged.</param>
         /// <returns>The bytes that should actually be sent.</returns>
-        protected void HandleSend(byte[] data, byte sendOption, Action ackCallback = null)
+        protected async ValueTask HandleSend(byte[] data, byte sendOption, Action ackCallback = null)
         {
             switch (sendOption)
             {
                 case (byte)UdpSendOption.Ping:
                 case (byte)SendOption.Reliable:
                 case (byte)UdpSendOption.Hello:
-                    ReliableSend(sendOption, data, ackCallback);
+                    await ReliableSend(sendOption, data, ackCallback);
                     break;
                                     
                 //Treat all else as unreliable
                 default:
-                    UnreliableSend(sendOption, data);
+                    await UnreliableSend(sendOption, data);
                     break;
             }
         }
@@ -121,44 +175,47 @@ namespace Hazel.Udp
         ///     Handles the receiving of data.
         /// </summary>
         /// <param name="message">The buffer containing the bytes received.</param>
-        protected internal void HandleReceive(MessageReader message, int bytesReceived)
+        protected async ValueTask HandleReceive(MessageReader message)
         {
-            ushort id;
-            switch (message.Buffer[0])
+            // Check if the first message received is the hello packet.
+            if (_isFirst)
+            {
+                _isFirst = false;
+
+                // Slice 4 bytes to get handshake data.
+                await _listener.InvokeNewConnection(message.Slice(4), this);
+            }
+
+            switch (message.Buffer.Span[0])
             {
                 //Handle reliable receives
                 case (byte)SendOption.Reliable:
-                    ReliableMessageReceive(message, bytesReceived);
+                    await ReliableMessageReceive(message);
                     break;
 
                 //Handle acknowledgments
                 case (byte)UdpSendOption.Acknowledgement:
-                    AcknowledgementMessageReceive(message.Buffer, bytesReceived);
-                    message.Recycle();
+                    AcknowledgementMessageReceive(message.Buffer.Span);
                     break;
 
                 //We need to acknowledge hello and ping messages but dont want to invoke any events!
                 case (byte)UdpSendOption.Ping:
-                    ProcessReliableReceive(message.Buffer, 1, out id);
-                    Statistics.LogHelloReceive(bytesReceived);
-                    message.Recycle();
+                    await ProcessReliableReceive(message.Buffer, 1);
+                    Statistics.LogHelloReceive(message.Length);
                     break;
                 case (byte)UdpSendOption.Hello:
-                    ProcessReliableReceive(message.Buffer, 1, out id);
-                    Statistics.LogHelloReceive(bytesReceived);
+                    await ProcessReliableReceive(message.Buffer, 1);
+                    Statistics.LogHelloReceive(message.Length);
                     break;
 
                 case (byte)UdpSendOption.Disconnect:
-                    message.Offset = 1;
-                    message.Position = 0;
-                    DisconnectRemote("The remote sent a disconnect request", message);
-                    message.Recycle();
+                    await DisconnectRemote("The remote sent a disconnect request", message.Slice(1));
                     break;
                     
                 //Treat everything else as unreliable
                 default:
-                    InvokeDataReceived(SendOption.None, message, 1, bytesReceived);
-                    Statistics.LogUnreliableReceive(bytesReceived - 1, bytesReceived);
+                    await InvokeDataReceived(message.Slice(1), SendOption.None);
+                    Statistics.LogUnreliableReceive(message.Length - 1, message.Length);
                     break;
             }
         }
@@ -168,9 +225,9 @@ namespace Hazel.Udp
         /// </summary>
         /// <param name="sendOption">The SendOption to attach.</param>
         /// <param name="data">The data.</param>
-        void UnreliableSend(byte sendOption, byte[] data)
+        ValueTask UnreliableSend(byte sendOption, byte[] data)
         {
-            this.UnreliableSend(sendOption, data, 0, data.Length);
+            return UnreliableSend(sendOption, data, 0, data.Length);
         }
 
         /// <summary>
@@ -180,7 +237,7 @@ namespace Hazel.Udp
         /// <param name="sendOption">The SendOption to attach.</param>
         /// <param name="offset"></param>
         /// <param name="length"></param>
-        void UnreliableSend(byte sendOption, byte[] data, int offset, int length)
+        async ValueTask UnreliableSend(byte sendOption, byte[] data, int offset, int length)
         {
             byte[] bytes = new byte[length + 1];
 
@@ -191,45 +248,9 @@ namespace Hazel.Udp
             Buffer.BlockCopy(data, offset, bytes, bytes.Length - length, length);
 
             //Write to connection
-            WriteBytesToConnection(bytes, bytes.Length);
+            await WriteBytesToConnection(bytes, bytes.Length);
 
             Statistics.LogUnreliableSend(length, bytes.Length);
-        }
-
-        /// <summary>
-        ///     Helper method to invoke the data received event.
-        /// </summary>
-        /// <param name="sendOption">The send option the message was received with.</param>
-        /// <param name="buffer">The buffer received.</param>
-        /// <param name="dataOffset">The offset of data in the buffer.</param>
-        void InvokeDataReceived(SendOption sendOption, MessageReader buffer, int dataOffset, int bytesReceived)
-        {
-            buffer.Offset = dataOffset;
-            buffer.Length = bytesReceived - dataOffset;
-            buffer.Position = 0;
-
-            InvokeDataReceived(buffer, sendOption);
-        }
-
-        /// <summary>
-        ///     Sends a hello packet to the remote endpoint.
-        /// </summary>
-        /// <param name="acknowledgeCallback">The callback to invoke when the hello packet is acknowledged.</param>
-        protected void SendHello(byte[] bytes, Action acknowledgeCallback)
-        {
-            //First byte of handshake is version indicator so add data after
-            byte[] actualBytes;
-            if (bytes == null)
-            {
-                actualBytes = new byte[1];
-            }
-            else
-            {
-                actualBytes = new byte[bytes.Length + 1];
-                Buffer.BlockCopy(bytes, 0, actualBytes, 1, bytes.Length);
-            }
-
-            HandleSend(actualBytes, (byte)UdpSendOption.Hello, acknowledgeCallback);
         }
                 
         /// <inheritdoc/>
@@ -237,6 +258,9 @@ namespace Hazel.Udp
         {
             if (disposing)
             {
+                _isDisposing = true;
+
+                Stop();
                 DisposeKeepAliveTimer();
                 DisposeReliablePackets();
             }

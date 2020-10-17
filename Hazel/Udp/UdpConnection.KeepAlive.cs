@@ -2,6 +2,7 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Threading;
+using System.Threading.Tasks;
 
 
 namespace Hazel.Udp
@@ -81,21 +82,21 @@ namespace Hazel.Udp
             );
         }
 
-        private void HandleKeepAlive(object state)
+        private async void HandleKeepAlive(object state)
         {
             if (this.State != ConnectionState.Connected) return;
 
             if (this.pingsSinceAck >= this.MissingPingsUntilDisconnect)
             {
                 this.DisposeKeepAliveTimer();
-                this.DisconnectInternal(HazelInternalErrors.PingsWithoutResponse, $"Sent {this.pingsSinceAck} pings that remote has not responded to.");
+                await this.DisconnectInternal(HazelInternalErrors.PingsWithoutResponse, $"Sent {this.pingsSinceAck} pings that remote has not responded to.");
                 return;
             }
 
             try
             {
-                this.pingsSinceAck++;
-                SendPing();
+                Interlocked.Increment(ref pingsSinceAck);
+                await SendPing();
             }
             catch
             {
@@ -107,7 +108,7 @@ namespace Hazel.Udp
         // An unacked ping should never be the sole cause of a disconnect.
         // Rather, the responses will reset our pingsSinceAck, enough unacked 
         // pings should cause a disconnect.
-        private void SendPing()
+        private async ValueTask SendPing()
         {
             ushort id = (ushort)Interlocked.Increment(ref lastIDAllocated);
 
@@ -128,7 +129,7 @@ namespace Hazel.Udp
 
             pkt.Stopwatch.Restart();
 
-            WriteBytesToConnection(bytes, bytes.Length);
+            await WriteBytesToConnection(bytes, bytes.Length);
 
             Statistics.LogReliableSend(0, bytes.Length);
         }

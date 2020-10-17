@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Net;
+using System.Threading.Tasks;
 
 
 namespace Hazel
@@ -32,7 +33,7 @@ namespace Hazel
         ///     This is the end point of the other device given as an <see cref="System.Net.EndPoint"/> rather than a generic
         ///     <see cref="ConnectionEndPoint"/> as the base <see cref="Connection"/> does.
         /// </remarks>
-        public EndPoint RemoteEndPoint { get; protected set; }
+        public IPEndPoint RemoteEndPoint { get; protected set; }
 
         public long GetIP4Address()
         {
@@ -55,13 +56,13 @@ namespace Hazel
         /// <summary>
         ///     Called when the socket has been disconnected at the remote host.
         /// </summary>
-        protected void DisconnectRemote(string reason, MessageReader reader)
+        protected async ValueTask DisconnectRemote(string reason, MessageReader reader)
         {
             if (this.SendDisconnect(null))
             {
                 try
                 {
-                    InvokeDisconnected(reason, reader);
+                    await InvokeDisconnected(reason, reader);
                 }
                 catch { }
             }
@@ -72,7 +73,7 @@ namespace Hazel
         /// <summary>
         /// Called when socket is disconnected internally
         /// </summary>
-        internal void DisconnectInternal(HazelInternalErrors error, string reason)
+        internal async ValueTask DisconnectInternal(HazelInternalErrors error, string reason)
         {
             var handler = this.OnInternalDisconnect;
             if (handler != null)
@@ -82,7 +83,7 @@ namespace Hazel
                 {
                     try
                     {
-                        Disconnect(reason, messageToRemote);
+                        await Disconnect(reason, messageToRemote);
                     }
                     finally
                     {
@@ -91,25 +92,25 @@ namespace Hazel
                 }
                 else
                 {
-                    Disconnect(reason);
+                    await Disconnect(reason);
                 }
             }
             else
             {
-                Disconnect(reason);
+                await Disconnect(reason);
             }
         }
 
         /// <summary>
         ///     Called when the socket has been disconnected locally.
         /// </summary>
-        public override void Disconnect(string reason, MessageWriter writer = null)
+        public override async ValueTask Disconnect(string reason, MessageWriter writer = null)
         {
             if (this.SendDisconnect(writer))
             {
                 try
                 {
-                    InvokeDisconnected(reason, null);
+                    await InvokeDisconnected(reason, null);
                 }
                 catch { }
             }

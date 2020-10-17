@@ -1,5 +1,7 @@
 ﻿using System;
 using System.Net;
+using System.Threading.Tasks;
+using Serilog;
 
 namespace Hazel
 {
@@ -29,6 +31,8 @@ namespace Hazel
     /// <threadsafety static="true" instance="true"/>
     public abstract class Connection : IDisposable
     {
+        private static readonly ILogger Logger = Log.ForContext<Connection>();
+
         /// <summary>
         ///     Called when a message has been received.
         /// </summary>
@@ -43,7 +47,7 @@ namespace Hazel
         /// <example>
         ///     <code language="C#" source="DocInclude/TcpClientExample.cs"/>
         /// </example>
-        public event Action<DataReceivedEventArgs> DataReceived;
+        public Func<DataReceivedEventArgs, ValueTask> DataReceived;
 
         public int TestLagMs = -1;
         public int TestDropRate = 0;
@@ -63,7 +67,7 @@ namespace Hazel
         /// <example>
         ///     <code language="C#" source="DocInclude/TcpClientExample.cs"/>
         /// </example>
-        public event EventHandler<DisconnectedEventArgs> Disconnected;
+        public Func<DisconnectedEventArgs, ValueTask> Disconnected;
 
         /// <summary>
         ///     The remote end point of this Connection.
@@ -134,7 +138,7 @@ namespace Hazel
         ///         general any implementer should aim to always follow the user's request.
         ///     </para>
         /// </remarks>
-        public abstract void Send(MessageWriter msg);
+        public abstract ValueTask Send(MessageWriter msg);
 
         /// <summary>
         ///     Sends a number of bytes to the end point of the connection using the specified <see cref="SendOption"/>.
@@ -149,7 +153,7 @@ namespace Hazel
         ///         general any implementer should aim to always follow the user's request.
         ///     </para>
         /// </remarks>
-        public abstract void SendBytes(byte[] bytes, SendOption sendOption = SendOption.None);
+        public abstract ValueTask SendBytes(byte[] bytes, SendOption sendOption = SendOption.None);
         
         /// <summary>
         ///     Connects the connection to a server and begins listening.
@@ -176,21 +180,20 @@ namespace Hazel
         ///     received. The bytes and the send option that the message was sent with should be passed in to give to the
         ///     subscribers.
         /// </remarks>
-        protected void InvokeDataReceived(MessageReader msg, SendOption sendOption)
+        protected async ValueTask InvokeDataReceived(MessageReader msg, SendOption sendOption)
         {
             // Make a copy to avoid race condition between null check and invocation
-            Action<DataReceivedEventArgs> handler = DataReceived;
+            var handler = DataReceived;
             if (handler != null)
             {
                 try
                 {
-                    handler(new DataReceivedEventArgs(this, msg, sendOption));
+                    await handler(new DataReceivedEventArgs(this, msg, sendOption));
                 }
-                catch { }
-            }
-            else
-            {
-                msg.Recycle();
+                catch (Exception e)
+                {
+                    Logger.Error(e, "Error in InvokeDataReceived");
+                }
             }
         }
 
@@ -204,19 +207,19 @@ namespace Hazel
         ///     by the end point or because an error occurred. If an error occurred the error should be passed in in order to 
         ///     pass to the subscribers, otherwise null can be passed in.
         /// </remarks>
-        protected void InvokeDisconnected(string e, MessageReader reader)
+        protected async ValueTask InvokeDisconnected(string e, MessageReader reader)
         {
             // Make a copy to avoid race condition between null check and invocation
-            EventHandler<DisconnectedEventArgs> handler = Disconnected;
+            var handler = Disconnected;
             if (handler != null)
             {
-                DisconnectedEventArgs args = new DisconnectedEventArgs(e, reader);
                 try
                 {
-                    handler(this, args);
+                    await handler(new DisconnectedEventArgs(e, reader));
                 }
-                catch
+                catch (Exception ex)
                 {
+                    Logger.Error(ex, "Error in InvokeDisconnected");
                 }
             }
         }
@@ -225,7 +228,7 @@ namespace Hazel
         /// For times when you want to force the disconnect handler to fire as well as close it.
         /// If you only want to close it, just use Dispose.
         /// </summary>
-        public abstract void Disconnect(string reason, MessageWriter writer = null);
+        public abstract ValueTask Disconnect(string reason, MessageWriter writer = null);
         
         /// <summary>
         ///     Disposes of this NetworkConnection.

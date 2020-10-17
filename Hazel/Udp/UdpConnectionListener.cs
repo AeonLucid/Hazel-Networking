@@ -3,6 +3,8 @@ using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Sockets;
 using System.Threading;
+using System.Threading.Tasks;
+using Serilog;
 
 namespace Hazel.Udp
 {
@@ -12,8 +14,7 @@ namespace Hazel.Udp
     /// <inheritdoc />
     public class UdpConnectionListener : NetworkConnectionListener
     {
-        private const int SendReceiveBufferSize = 1024 * 1024;
-        private const int BufferSize = ushort.MaxValue;
+        private static readonly ILogger Logger = Log.ForContext<UdpConnectionListener>();
 
         /// <summary>
         /// A callback for early connection rejection. 
@@ -23,214 +24,150 @@ namespace Hazel.Udp
         public AcceptConnectionCheck AcceptConnection;
         public delegate bool AcceptConnectionCheck(IPEndPoint endPoint, byte[] input, out byte[] response);
 
-        private Socket socket;
-        private Action<string> Logger;
-        private Timer reliablePacketTimer;
-
-        private ConcurrentDictionary<EndPoint, UdpServerConnection> allConnections = new ConcurrentDictionary<EndPoint, UdpServerConnection>();
-        
-        public int ConnectionCount { get { return this.allConnections.Count; } }
+        private readonly UdpClient _socket;
+        private readonly Timer _reliablePacketTimer;
+        private readonly ConcurrentDictionary<EndPoint, UdpServerConnection> _allConnections;
+        private readonly CancellationTokenSource _stoppingCts;
+        private Task _executingTask;
 
         /// <summary>
         ///     Creates a new UdpConnectionListener for the given <see cref="IPAddress"/>, port and <see cref="IPMode"/>.
         /// </summary>
         /// <param name="endPoint">The endpoint to listen on.</param>
-        public UdpConnectionListener(IPEndPoint endPoint, IPMode ipMode = IPMode.IPv4, Action<string> logger = null)
+        /// <param name="ipMode"></param>
+        /// <param name="logger"></param>
+        public UdpConnectionListener(IPEndPoint endPoint, IPMode ipMode = IPMode.IPv4)
         {
-            this.Logger = logger;
-            this.EndPoint = endPoint;
-            this.IPMode = ipMode;
+            EndPoint = endPoint;
+            IPMode = ipMode;
 
-            this.socket = UdpConnection.CreateSocket(this.IPMode);
-            
-            socket.ReceiveBufferSize = SendReceiveBufferSize;
-            socket.SendBufferSize = SendReceiveBufferSize;
-            
-            reliablePacketTimer = new Timer(ManageReliablePackets, null, 100, Timeout.Infinite);
+            _socket = new UdpClient(endPoint)
+            {
+                DontFragment = false
+            };
+
+            _reliablePacketTimer = new Timer(ManageReliablePackets, null, 100, Timeout.Infinite);
+
+            _allConnections = new ConcurrentDictionary<EndPoint, UdpServerConnection>();
+
+            _stoppingCts = new CancellationTokenSource();
+            _stoppingCts.Token.Register(() =>
+            {
+                _socket.Dispose();
+            });
         }
 
-        ~UdpConnectionListener()
-        {
-            this.Dispose(false);
-        }
+        public int ConnectionCount => this._allConnections.Count;
         
-        private void ManageReliablePackets(object state)
+        private async void ManageReliablePackets(object state)
         {
-            foreach (var kvp in this.allConnections)
+            foreach (var kvp in _allConnections)
             {
                 var sock = kvp.Value;
-                sock.ManageReliablePackets();
+                await sock.ManageReliablePackets();
             }
 
             try
             {
-                this.reliablePacketTimer.Change(100, Timeout.Infinite);
+                this._reliablePacketTimer.Change(100, Timeout.Infinite);
             }
             catch { }
         }
 
         /// <inheritdoc />
-        public override void Start()
+        public override Task StartAsync()
         {
-            try
+            // Store the task we're executing
+            _executingTask = ListenAsync();
+
+            // If the task is completed then return it, this will bubble cancellation and failure to the caller
+            if (_executingTask.IsCompleted)
             {
-                socket.Bind(EndPoint);
-            }
-            catch (SocketException e)
-            {
-                throw new HazelException("Could not start listening as a SocketException occurred", e);
+                return _executingTask;
             }
 
-            StartListeningForData();
+            // Otherwise it's running
+            return Task.CompletedTask;
+        }
+
+        private async Task StopAsync()
+        {
+            // Stop called without start
+            if (_executingTask == null)
+            {
+                return;
+            }
+
+            try
+            {
+                // Signal cancellation to the executing method
+                _stoppingCts.Cancel();
+            }
+            finally
+            {
+                // Wait until the task completes or the timeout triggers
+                await Task.WhenAny(_executingTask, Task.Delay(TimeSpan.FromSeconds(5)));
+            }
         }
 
         /// <summary>
         ///     Instructs the listener to begin listening.
         /// </summary>
-        private void StartListeningForData()
+        private async Task ListenAsync()
         {
-            EndPoint remoteEP = EndPoint;
-
-            MessageReader message = null;
             try
             {
-                message = MessageReader.GetSized(BufferSize);
-                socket.BeginReceiveFrom(message.Buffer, 0, message.Buffer.Length, SocketFlags.None, ref remoteEP, ReadCallback, message);
-            }
-            catch (SocketException sx)
-            {
-                message?.Recycle();
-
-                this.Logger?.Invoke("Socket Ex in StartListening: " + sx.Message);
-
-                Thread.Sleep(10);
-                StartListeningForData();
-                return;
-            }
-            catch (Exception ex)
-            {
-                message.Recycle();
-                this.Logger?.Invoke("Stopped due to: " + ex.Message);
-                return;
-            }
-        }
-
-        void ReadCallback(IAsyncResult result)
-        {
-            var message = (MessageReader)result.AsyncState;
-            int bytesReceived;
-            EndPoint remoteEndPoint = new IPEndPoint(this.EndPoint.Address, this.EndPoint.Port);
-
-            //End the receive operation
-            try
-            {
-                bytesReceived = socket.EndReceiveFrom(result, ref remoteEndPoint);
-
-                message.Offset = 0;
-                message.Length = bytesReceived;
-            }
-            catch (ObjectDisposedException)
-            {
-                message.Recycle();
-                return;
-            }
-            catch (SocketException sx)
-            {
-                // Client no longer reachable, pretend it didn't happen
-                // TODO should this not inform the connection this client is lost???
-
-                // This thread suggests the IP is not passed out from WinSoc so maybe not possible
-                // http://stackoverflow.com/questions/2576926/python-socket-error-on-udp-data-receive-10054
-                message.Recycle();
-                this.Logger?.Invoke($"Socket Ex {sx.SocketErrorCode} in ReadCallback: {sx.Message}");
-
-                Thread.Sleep(10);
-                StartListeningForData();
-                return;
-            }
-            catch (Exception ex)
-            {
-                //If the socket's been disposed then we can just end there.
-                message.Recycle();
-                this.Logger?.Invoke("Stopped due to: " + ex.Message);
-                return;
-            }
-
-            // I'm a little concerned about a infinite loop here, but it seems like it's possible 
-            // to get 0 bytes read on UDP without the socket being shut down.
-            if (bytesReceived == 0)
-            {
-                message.Recycle();
-                this.Logger?.Invoke("Received 0 bytes");
-                Thread.Sleep(10);
-                StartListeningForData();
-                return;
-            }
-
-            //Begin receiving again
-            StartListeningForData();
-
-            bool aware = true;
-            bool isHello = message.Buffer[0] == (byte)UdpSendOption.Hello;
-
-            // If we're aware of this connection use the one already
-            // If this is a new client then connect with them!
-            UdpServerConnection connection;
-            if (!this.allConnections.TryGetValue(remoteEndPoint, out connection))
-            {
-                lock (this.allConnections)
+                while (!_stoppingCts.IsCancellationRequested)
                 {
-                    if (!this.allConnections.TryGetValue(remoteEndPoint, out connection))
+                    UdpReceiveResult data;
+
+                    try
+                    {
+                        data = await _socket.ReceiveAsync();
+
+                        if (data.Buffer.Length == 0)
+                        {
+                            Logger.Fatal("Hazel read 0 bytes from UDP server socket.");
+                            continue;
+                        }
+                    }
+                    catch (SocketException e)
+                    {
+                        // Client no longer reachable, pretend it didn't happen
+                        continue;
+                    }
+
+                    // Get client from active clients
+                    if (!_allConnections.TryGetValue(data.RemoteEndPoint, out var client))
                     {
                         // Check for malformed connection attempts
-                        if (!isHello)
+                        if (data.Buffer[0] != (byte)UdpSendOption.Hello)
                         {
-                            message.Recycle();
-                            return;
+                            continue;
                         }
 
-                        if (AcceptConnection != null)
-                        {
-                            if (!AcceptConnection((IPEndPoint)remoteEndPoint, message.Buffer, out var response))
-                            {
-                                message.Recycle();
-                                if (response != null)
-                                {
-                                    SendData(response, response.Length, remoteEndPoint);
-                                }
+                        // Create new client
+                        client = new UdpServerConnection(this, data.RemoteEndPoint, IPMode);
 
-                                return;
-                            }
-                        }
-
-                        aware = false;
-                        connection = new UdpServerConnection(this, (IPEndPoint)remoteEndPoint, this.IPMode);
-                        if (!this.allConnections.TryAdd(remoteEndPoint, connection))
+                        // Store the client
+                        if (!_allConnections.TryAdd(data.RemoteEndPoint, client))
                         {
                             throw new HazelException("Failed to add a connection. This should never happen.");
                         }
+
+                        // Activate the reader loop of the client
+                        await client.StartAsync();
                     }
+
+                    Console.WriteLine($"{client.EndPoint}: {data.Buffer.Length}");
+
+                    // Write received bytes to the client
+                    await client.Pipeline.Writer.WriteAsync(data.Buffer);
                 }
             }
-
-            // If it's a new connection invoke the NewConnection event.
-            // This needs to happen before handling the message because in localhost scenarios, the ACK and
-            // subsequent messages can happen before the NewConnection event sets up OnDataRecieved handlers
-            if (!aware)
+            catch (Exception e)
             {
-                // Skip header and hello byte;
-                message.Offset = 4;
-                message.Length = bytesReceived - 4;
-                message.Position = 0;
-                InvokeNewConnection(message, connection);
-            }
-
-            // Inform the connection of the buffer (new connections need to send an ack back to client)
-            connection.HandleReceive(message, bytesReceived);
-
-            if (aware && isHello)
-            {
-                message.Recycle();
+                Logger.Error(e, "Listen loop error");
             }
         }
 
@@ -244,7 +181,7 @@ namespace Hazel.Udp
         /// </summary>
         /// <param name="bytes">The bytes to send.</param>
         /// <param name="endPoint">The endpoint to send to.</param>
-        internal void SendData(byte[] bytes, int length, EndPoint endPoint)
+        internal async ValueTask SendData(byte[] bytes, int length, IPEndPoint endPoint)
         {
             if (length > bytes.Length) return;
 
@@ -260,18 +197,11 @@ namespace Hazel.Udp
 
             try
             {
-                socket.BeginSendTo(
-                    bytes,
-                    0,
-                    length,
-                    SocketFlags.None,
-                    endPoint,
-                    SendCallback,
-                    null);
+                await _socket.SendAsync(bytes, length, endPoint);
             }
             catch (SocketException e)
             {
-                this.Logger?.Invoke("Could not send data as a SocketException occurred: " + e);
+                Logger.Error(e, "Could not send data as a SocketException occurred");
             }
             catch (ObjectDisposedException)
             {
@@ -280,33 +210,22 @@ namespace Hazel.Udp
             }
         }
 
-        private void SendCallback(IAsyncResult result)
-        {
-            try
-            {
-                socket.EndSendTo(result);
-            }
-            catch { }
-        }
-
         /// <summary>
         ///     Sends data from the listener socket.
         /// </summary>
         /// <param name="bytes">The bytes to send.</param>
+        /// <param name="length"></param>
         /// <param name="endPoint">The endpoint to send to.</param>
-        internal void SendDataSync(byte[] bytes, int length, EndPoint endPoint)
+        internal void SendDataSync(byte[] bytes, int length, IPEndPoint endPoint)
         {
             try
             {
-                socket.SendTo(
-                    bytes,
-                    0,
-                    length,
-                    SocketFlags.None,
-                    endPoint
-                );
+                _socket.Send(bytes, length, endPoint);
             }
-            catch { }
+            catch (SocketException e)
+            {
+                Logger.Error(e, "Could not send data sync as a SocketException occurred");
+            }
         }
 
         /// <summary>
@@ -315,24 +234,22 @@ namespace Hazel.Udp
         /// <param name="endPoint">The endpoint of the virtual connection.</param>
         internal void RemoveConnectionTo(EndPoint endPoint)
         {
-            this.allConnections.TryRemove(endPoint, out var conn);
+            this._allConnections.TryRemove(endPoint, out var conn);
         }
 
         /// <inheritdoc />
-        protected override void Dispose(bool disposing)
+        public override async ValueTask DisposeAsync()
         {
-            foreach (var kvp in this.allConnections)
+            foreach (var kvp in _allConnections)
             {
                 kvp.Value.Dispose();
             }
 
-            try { this.socket.Shutdown(SocketShutdown.Both); } catch { }
-            try { this.socket.Close(); } catch { }
-            try { this.socket.Dispose(); } catch { }
+            await StopAsync();
 
-            this.reliablePacketTimer.Dispose();
+            await _reliablePacketTimer.DisposeAsync();
 
-            base.Dispose(disposing);
+            await base.DisposeAsync();
         }
     }
 }

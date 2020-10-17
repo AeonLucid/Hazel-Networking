@@ -130,25 +130,6 @@ namespace Hazel
 
         #region WriteMethods
 
-        public void CopyFrom(MessageReader target)
-        {
-            int offset, length;
-            if (target.Tag == byte.MaxValue)
-            {
-                offset = target.Offset;
-                length = target.Length;
-            }
-            else
-            {
-                offset = target.Offset - 3;
-                length = target.Length + 3;
-            }
-
-            System.Buffer.BlockCopy(target.Buffer, offset, this.Buffer, this.Position, length);
-            this.Position += length;
-            if (this.Position > this.Length) this.Length = this.Position;
-        }
-
         public void Write(bool value)
         {
             this.Buffer[this.Position++] = (byte)(value ? 1 : 0);
@@ -238,6 +219,11 @@ namespace Hazel
         {
             this.WritePacked((uint)length);
             this.Write(bytes, offset, length);
+        }
+
+        public void Write(ReadOnlyMemory<byte> data)
+        {
+            this.Write(data.ToArray()); // TODO: Fix memory allocation.
         }
 
         public void Write(byte[] bytes)

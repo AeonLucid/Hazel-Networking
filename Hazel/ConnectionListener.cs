@@ -1,4 +1,6 @@
 ﻿using System;
+using System.Threading.Tasks;
+using Serilog;
 
 namespace Hazel
 {
@@ -17,8 +19,10 @@ namespace Hazel
     ///     </para>
     /// </remarks>
     /// <threadsafety static="true" instance="true"/>
-    public abstract class ConnectionListener : IDisposable
+    public abstract class ConnectionListener : IAsyncDisposable
     {
+        private static readonly ILogger Logger = Log.ForContext<ConnectionListener>();
+
         /// <summary>
         ///     Invoked when a new client connects.
         /// </summary>
@@ -37,7 +41,7 @@ namespace Hazel
         /// <example>
         ///     <code language="C#" source="DocInclude/TcpListenerExample.cs"/>
         /// </example>
-        public event Action<NewConnectionEventArgs> NewConnection;
+        public Func<NewConnectionEventArgs, ValueTask> NewConnection;
 
         /// <summary>
         ///     Makes this connection listener begin listening for connections.
@@ -48,13 +52,13 @@ namespace Hazel
         ///         connects the <see cref="NewConnection"/> event will be invoked containing the connection to the new client.
         ///     </para>
         ///     <para>
-        ///         To stop listening you should call <see cref="Dispose()"/>.
+        ///         To stop listening you should call <see cref="DisposeAsync()"/>.
         ///     </para>
         /// </remarks>
         /// <example>
         ///     <code language="C#" source="DocInclude/TcpListenerExample.cs"/>
         /// </example>
-        public abstract void Start();
+        public abstract Task StartAsync();
 
         /// <summary>
         ///     Invokes the NewConnection event with the supplied connection.
@@ -65,39 +69,30 @@ namespace Hazel
         ///     Implementers should call this to invoke the <see cref="NewConnection"/> event before data is received so that
         ///     subscribers do not miss any data that may have been sent immediately after connecting.
         /// </remarks>
-        protected void InvokeNewConnection(MessageReader msg, Connection connection)
+        internal async Task InvokeNewConnection(MessageReader msg, Connection connection)
         {
             // Make a copy to avoid race condition between null check and invocation
-            Action<NewConnectionEventArgs> handler = NewConnection;
+            var handler = NewConnection;
             if (handler != null)
             {
                 try
                 {
-                    handler(new NewConnectionEventArgs(msg, connection));
+                    await handler(new NewConnectionEventArgs(msg, connection));
                 }
-                catch { }
-            }
-            else
-            {
-                msg.Recycle();
+                catch (Exception e)
+                {
+                    Logger.Error(e, "Error in InvokeNewConnection");
+                }
             }
         }
 
         /// <summary>
         ///     Call to dispose of the connection listener.
         /// </summary>
-        public void Dispose()
-        {
-            Dispose(true);
-        }
-
-        /// <summary>
-        ///     Called when the object is being disposed.
-        /// </summary>
-        /// <param name="disposing">Are we disposing?</param>
-        protected virtual void Dispose(bool disposing)
+        public virtual ValueTask DisposeAsync()
         {
             this.NewConnection = null;
+            return ValueTask.CompletedTask;
         }
     }
 }

@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Net;
+using System.Threading.Tasks;
 
 namespace Hazel.Udp
 {
@@ -24,8 +25,7 @@ namespace Hazel.Udp
         /// <param name="listener">The listener that created this connection.</param>
         /// <param name="endPoint">The endpoint that we are connected to.</param>
         /// <param name="IPMode">The IPMode we are connected using.</param>
-        internal UdpServerConnection(UdpConnectionListener listener, IPEndPoint endPoint, IPMode IPMode)
-            : base()
+        internal UdpServerConnection(UdpConnectionListener listener, IPEndPoint endPoint, IPMode IPMode) : base(listener)
         {
             this.Listener = listener;
             this.RemoteEndPoint = endPoint;
@@ -37,9 +37,9 @@ namespace Hazel.Udp
         }
 
         /// <inheritdoc />
-        protected override void WriteBytesToConnection(byte[] bytes, int length)
+        protected override async ValueTask WriteBytesToConnection(byte[] bytes, int length)
         {
-            Listener.SendData(bytes, length, RemoteEndPoint);
+            await Listener.SendData(bytes, length, RemoteEndPoint);
         }
 
         /// <inheritdoc />
