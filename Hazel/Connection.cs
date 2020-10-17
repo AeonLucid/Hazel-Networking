@@ -129,7 +129,7 @@ namespace Hazel
         /// <summary>
         ///     Sends a number of bytes to the end point of the connection using the specified <see cref="SendOption"/>.
         /// </summary>
-        /// <param name="msg">The message to send.</param>
+        /// <param name="message">The message to send.</param>
         /// <remarks>
         ///     <include file="DocInclude/common.xml" path="docs/item[@name='Connection_SendBytes_General']/*" />
         ///     <para>
@@ -138,7 +138,7 @@ namespace Hazel
         ///         general any implementer should aim to always follow the user's request.
         ///     </para>
         /// </remarks>
-        public abstract ValueTask Send(MessageWriter msg);
+        public abstract ValueTask Send(MessageWriter message);
 
         /// <summary>
         ///     Sends a number of bytes to the end point of the connection using the specified <see cref="SendOption"/>.

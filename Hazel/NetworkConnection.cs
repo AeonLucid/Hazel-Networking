@@ -78,7 +78,7 @@ namespace Hazel
             var handler = this.OnInternalDisconnect;
             if (handler != null)
             {
-                MessageWriter messageToRemote = handler(error);
+                var messageToRemote = handler(error);
                 if (messageToRemote != null)
                 {
                     try
@@ -87,7 +87,7 @@ namespace Hazel
                     }
                     finally
                     {
-                        messageToRemote.Recycle();
+                        messageToRemote.Dispose();
                     }
                 }
                 else

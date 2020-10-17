@@ -107,30 +107,31 @@ namespace Hazel.Udp
         /// </summary>
         /// <param name="bytes">The bytes to write.</param>
         /// <param name="length"></param>
-        protected abstract ValueTask WriteBytesToConnection(byte[] bytes, int length);
+        protected abstract ValueTask WriteBytesToConnection(ReadOnlyMemory<byte> bytes, int length);
 
         /// <inheritdoc/>
-        public override async ValueTask Send(MessageWriter msg)
+        public override async ValueTask Send(MessageWriter message)
         {
             if (this._state != ConnectionState.Connected)
                 throw new InvalidOperationException("Could not send data as this Connection is not connected. Did you disconnect?");
 
-            byte[] buffer = new byte[msg.Length];
-            Buffer.BlockCopy(msg.Buffer, 0, buffer, 0, msg.Length);
-
-            switch (msg.SendOption)
+            switch (message.SendOption)
             {
                 case SendOption.Reliable:
                     ResetKeepAliveTimer();
 
-                    AttachReliableID(buffer, 1, buffer.Length);
-                    await WriteBytesToConnection(buffer, buffer.Length);
-                    Statistics.LogReliableSend(buffer.Length - 3, buffer.Length);
+                    var data = message.Data.Slice(0, message.Length).ToArray();
+
+                    AttachReliableID(data, 1, data.Length);
+                    Console.WriteLine(BitConverter.ToString(data));
+                    await WriteBytesToConnection(data, message.Length);
+                    Statistics.LogReliableSend(message.Length - 3, message.Length);
                     break;
 
+                
                 default:
-                    await WriteBytesToConnection(buffer, buffer.Length);
-                    Statistics.LogUnreliableSend(buffer.Length - 1, buffer.Length);
+                    await WriteBytesToConnection(message.Data, message.Length);
+                    Statistics.LogUnreliableSend(message.Length - 1, message.Length);
                     break;
             }
         }
@@ -144,34 +145,9 @@ namespace Hazel.Udp
         ///         <see cref="SendOption.None"/> until implemented.
         ///     </para>
         /// </remarks>
-        public override async ValueTask SendBytes(byte[] bytes, SendOption sendOption = SendOption.None)
+        public override ValueTask SendBytes(byte[] bytes, SendOption sendOption = SendOption.None)
         {
-            //Add header information and send
-            await HandleSend(bytes, (byte)sendOption);
-        }
-        
-        /// <summary>
-        ///     Handles the reliable/fragmented sending from this connection.
-        /// </summary>
-        /// <param name="data">The data being sent.</param>
-        /// <param name="sendOption">The <see cref="SendOption"/> specified as its byte value.</param>
-        /// <param name="ackCallback">The callback to invoke when this packet is acknowledged.</param>
-        /// <returns>The bytes that should actually be sent.</returns>
-        protected async ValueTask HandleSend(byte[] data, byte sendOption, Action ackCallback = null)
-        {
-            switch (sendOption)
-            {
-                case (byte)UdpSendOption.Ping:
-                case (byte)SendOption.Reliable:
-                case (byte)UdpSendOption.Hello:
-                    await ReliableSend(sendOption, data, ackCallback);
-                    break;
-                                    
-                //Treat all else as unreliable
-                default:
-                    await UnreliableSend(sendOption, data);
-                    break;
-            }
+            throw new NotImplementedException();
         }
 
         /// <summary>

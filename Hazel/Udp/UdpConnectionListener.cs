@@ -201,7 +201,7 @@ namespace Hazel.Udp
         /// </summary>
         /// <param name="bytes">The bytes to send.</param>
         /// <param name="endPoint">The endpoint to send to.</param>
-        internal async ValueTask SendData(byte[] bytes, int length, IPEndPoint endPoint)
+        internal async ValueTask SendData(ReadOnlyMemory<byte> bytes, int length, IPEndPoint endPoint)
         {
             if (length > bytes.Length) return;
 
@@ -217,7 +217,8 @@ namespace Hazel.Udp
 
             try
             {
-                await _socket.SendAsync(bytes, length, endPoint);
+                // TODO: Some day, we can remove the "ToArray()". https://github.com/dotnet/runtime/issues/33417
+                await _socket.SendAsync(bytes.ToArray(), length, endPoint);
             }
             catch (SocketException e)
             {

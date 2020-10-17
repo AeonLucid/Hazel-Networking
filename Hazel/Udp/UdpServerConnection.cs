@@ -37,9 +37,9 @@ namespace Hazel.Udp
         }
 
         /// <inheritdoc />
-        protected override async ValueTask WriteBytesToConnection(byte[] bytes, int length)
+        protected override async ValueTask WriteBytesToConnection(ReadOnlyMemory<byte> bytes, int length)
         {
-            await Listener.SendData(bytes, length, RemoteEndPoint);
+            await Listener.SendData(bytes.Slice(0, length), length, RemoteEndPoint);
         }
 
         /// <inheritdoc />

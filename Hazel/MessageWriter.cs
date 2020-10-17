@@ -1,259 +1,192 @@
 ﻿using System;
+using System.Buffers;
+using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.Text;
 
 namespace Hazel
 {
-    ///
-    public class MessageWriter : IRecyclable, IDisposable
+    public class MessageWriter : IDisposable
     {
-        public static int BufferSize = 64000;
-        public static readonly ObjectPool<MessageWriter> WriterPool = new ObjectPool<MessageWriter>(() => new MessageWriter(BufferSize));
+        private const int MaxPacketSize = 65535;
+        private static readonly MemoryPool<byte> Pool = MemoryPool<byte>.Shared;
 
-        public byte[] Buffer;
-        public int Length;
-        public int Position;
+        private readonly IMemoryOwner<byte> _memoryOwner;
+        private readonly Stack<int> _messageStarts;
+
+        private MessageWriter(IMemoryOwner<byte> memoryOwner, SendOption option)
+        {
+            _memoryOwner = memoryOwner;
+            _messageStarts = new Stack<int>();
+
+            SendOption = option;
+
+            Clear(option);
+        }
 
         public SendOption SendOption { get; private set; }
+        public int Length { get; private set; }
+        public int Position { get; private set; }
+        public ReadOnlyMemory<byte> Data => _memoryOwner.Memory;
+        internal Memory<byte> DataWritable => _memoryOwner.Memory;
 
-        private Stack<int> messageStarts = new Stack<int>();
-        
-        public MessageWriter(byte[] buffer)
-        {
-            this.Buffer = buffer;
-            this.Length = this.Buffer.Length;
-        }
-
-        ///
-        public MessageWriter(int bufferSize)
-        {
-            this.Buffer = new byte[bufferSize];
-        }
-
-        public byte[] ToByteArray(bool includeHeader)
-        {
-            if (includeHeader)
-            {
-                byte[] output = new byte[this.Length];
-                System.Buffer.BlockCopy(this.Buffer, 0, output, 0, this.Length);
-                return output;
-            }
-            else
-            {
-                switch (this.SendOption)
-                {
-                    case SendOption.Reliable:
-                        {
-                            byte[] output = new byte[this.Length - 3];
-                            System.Buffer.BlockCopy(this.Buffer, 3, output, 0, this.Length - 3);
-                            return output;
-                        }
-                    case SendOption.None:
-                        {
-                            byte[] output = new byte[this.Length - 1];
-                            System.Buffer.BlockCopy(this.Buffer, 1, output, 0, this.Length - 1);
-                            return output;
-                        }
-                }
-            }
-
-            throw new NotImplementedException();
-        }
-
-        ///
+        /// <summary>
+        ///     Creates a new <see cref="MessageWriter"/>.
+        /// </summary>
         /// <param name="sendOption">The option specifying how the message should be sent.</param>
+        /// <returns></returns>
         public static MessageWriter Get(SendOption sendOption = SendOption.None)
         {
-            var output = WriterPool.GetObject();
-            output.Clear(sendOption);
-
-            return output;
-        }
-
-        public bool HasBytes(int expected)
-        {
-            if (this.SendOption == SendOption.None)
+            if (sendOption == SendOption.Reliable)
             {
-                return this.Length > 1 + expected;
+                Console.WriteLine("Creating reliable");
             }
-
-            return this.Length > 3 + expected;
+            return new MessageWriter(Pool.Rent(MaxPacketSize), sendOption);
         }
 
-        ///
         public void StartMessage(byte typeFlag)
         {
-            messageStarts.Push(this.Position);
-            this.Position += 2; // Skip for size
-            this.Write(typeFlag);
+            _messageStarts.Push(Position);
+            Position += 2; // Skip for size
+            Write(typeFlag);
         }
 
-        ///
         public void EndMessage()
         {
-            var lastMessageStart = messageStarts.Pop();
-            ushort length = (ushort)(this.Position - lastMessageStart - 3); // Minus length and type byte
-            this.Buffer[lastMessageStart] = (byte)length;
-            this.Buffer[lastMessageStart + 1] = (byte)(length >> 8);
+            var lastMessageStart = _messageStarts.Pop();
+            var length = (ushort)(Position - lastMessageStart - 3); // Minus message header
+            BinaryPrimitives.WriteUInt16LittleEndian(DataWritable.Span.Slice(lastMessageStart), length);
         }
 
-        ///
         public void CancelMessage()
         {
-            this.Position = this.messageStarts.Pop();
-            this.Length = this.Position;
+            Position = _messageStarts.Pop();
+            Length = Position;
         }
 
         public void Clear(SendOption sendOption)
         {
-            this.messageStarts.Clear();
-            this.SendOption = sendOption;
-            this.Buffer[0] = (byte)sendOption;
+            _messageStarts.Clear();
+
+            SendOption = sendOption;
+            DataWritable.Span[0] = (byte)sendOption;
+
             switch (sendOption)
             {
-                default:
                 case SendOption.None:
-                    this.Length = this.Position = 1;
+                    Length = Position = 1;
                     break;
                 case SendOption.Reliable:
-                    this.Length = this.Position = 3;
+                    Length = Position = 3;
                     break;
             }
-        }
-
-        ///
-        public void Recycle()
-        {
-            this.Position = this.Length = 0;
-            WriterPool.PutObject(this);
         }
 
         #region WriteMethods
 
         public void Write(bool value)
         {
-            this.Buffer[this.Position++] = (byte)(value ? 1 : 0);
-            if (this.Position > this.Length) this.Length = this.Position;
+            DataWritable.Span[Position++] = value ? 1 : 0;
+
+            if (Position > Length)
+            {
+                Length = Position;
+            }
         }
 
         public void Write(sbyte value)
         {
-            this.Buffer[this.Position++] = (byte)value;
-            if (this.Position > this.Length) this.Length = this.Position;
+            DataWritable.Span[Position++] = (byte)value;
+            if (Position > Length) Length = Position;
         }
 
         public void Write(byte value)
         {
-            this.Buffer[this.Position++] = value;
-            if (this.Position > this.Length) this.Length = this.Position;
+            DataWritable.Span[Position++] = value;
+            if (Position > Length) Length = Position;
         }
 
         public void Write(short value)
         {
-            this.Buffer[this.Position++] = (byte)value;
-            this.Buffer[this.Position++] = (byte)(value >> 8);
-            if (this.Position > this.Length) this.Length = this.Position;
+            BinaryPrimitives.WriteInt16LittleEndian(DataWritable.Span.Slice(Position), value);
+            Position += 2;
+            if (Position > Length) Length = Position;
         }
 
         public void Write(ushort value)
         {
-            this.Buffer[this.Position++] = (byte)value;
-            this.Buffer[this.Position++] = (byte)(value >> 8);
-            if (this.Position > this.Length) this.Length = this.Position;
+            BinaryPrimitives.WriteUInt16LittleEndian(DataWritable.Span.Slice(Position), value);
+            Position += 2;
+            if (Position > Length) Length = Position;
         }
 
         public void Write(uint value)
         {
-            this.Buffer[this.Position++] = (byte)value;
-            this.Buffer[this.Position++] = (byte)(value >> 8);
-            this.Buffer[this.Position++] = (byte)(value >> 16);
-            this.Buffer[this.Position++] = (byte)(value >> 24);
-            if (this.Position > this.Length) this.Length = this.Position;
+            BinaryPrimitives.WriteUInt32LittleEndian(DataWritable.Span.Slice(Position), value);
+            Position += 4;
+            if (Position > Length) Length = Position;
         }
 
         public void Write(int value)
         {
-            this.Buffer[this.Position++] = (byte)value;
-            this.Buffer[this.Position++] = (byte)(value >> 8);
-            this.Buffer[this.Position++] = (byte)(value >> 16);
-            this.Buffer[this.Position++] = (byte)(value >> 24);
-            if (this.Position > this.Length) this.Length = this.Position;
+            BinaryPrimitives.WriteInt32LittleEndian(DataWritable.Span.Slice(Position), value);
+            Position += 4;
+            if (Position > Length) Length = Position;
         }
 
-        public unsafe void Write(float value)
+        public void Write(float value)
         {
-            fixed (byte* ptr = &this.Buffer[this.Position])
-            {
-                byte* valuePtr = (byte*)&value;
-
-                *ptr = *valuePtr;
-                *(ptr + 1) = *(valuePtr + 1);
-                *(ptr + 2) = *(valuePtr + 2);
-                *(ptr + 3) = *(valuePtr + 3);
-            }
-
-            this.Position += 4;
-            if (this.Position > this.Length) this.Length = this.Position;
+            BinaryPrimitives.WriteSingleLittleEndian(DataWritable.Span.Slice(Position), value);
+            Position += 4;
+            if (Position > Length) Length = Position;
         }
 
         public void Write(string value)
         {
-            var bytes = UTF8Encoding.UTF8.GetBytes(value);
-            this.WritePacked(bytes.Length);
-            this.Write(bytes);
+            var bytes = Encoding.UTF8.GetBytes(value);
+            WritePacked(bytes.Length);
+            Write(bytes);
         }
 
         public void WriteBytesAndSize(byte[] bytes)
         {
-            this.WritePacked((uint)bytes.Length);
-            this.Write(bytes);
+            WritePacked((uint)bytes.Length);
+            Write(bytes);
         }
 
         public void WriteBytesAndSize(byte[] bytes, int length)
         {
-            this.WritePacked((uint)length);
-            this.Write(bytes, length);
+            WritePacked((uint)length);
+            Write(bytes, length);
         }
 
         public void WriteBytesAndSize(byte[] bytes, int offset, int length)
         {
-            this.WritePacked((uint)length);
-            this.Write(bytes, offset, length);
+            WritePacked((uint)length);
+            Write(bytes, offset, length);
         }
 
         public void Write(ReadOnlyMemory<byte> data)
         {
-            this.Write(data.ToArray()); // TODO: Fix memory allocation.
-        }
-
-        public void Write(byte[] bytes)
-        {
-            Array.Copy(bytes, 0, this.Buffer, this.Position, bytes.Length);
-            this.Position += bytes.Length;
-            if (this.Position > this.Length) this.Length = this.Position;
+            data.CopyTo(DataWritable.Slice(Position));
+            Position += data.Length;
         }
 
         public void Write(byte[] bytes, int offset, int length)
         {
-            Array.Copy(bytes, offset, this.Buffer, this.Position, length);
-            this.Position += length;
-            if (this.Position > this.Length) this.Length = this.Position;
+            Write(bytes.AsMemory(offset, length));
         }
 
         public void Write(byte[] bytes, int length)
         {
-            Array.Copy(bytes, 0, this.Buffer, this.Position, length);
-            this.Position += length;
-            if (this.Position > this.Length) this.Length = this.Position;
+            Write(bytes.AsMemory(0, length));
         }
 
-        ///
         public void WritePacked(int value)
         {
-            this.WritePacked((uint)value);
+            WritePacked((uint)value);
         }
 
-        ///
         public void WritePacked(uint value)
         {
             do
@@ -264,47 +197,42 @@ namespace Hazel
                     b |= 0x80;
                 }
 
-                this.Write(b);
+                Write(b);
                 value >>= 7;
             } while (value > 0);
         }
+
         #endregion
 
-        public void Write(MessageWriter msg, bool includeHeader)
+        public bool HasBytes(int expected)
         {
-            int offset = 0;
-            if (!includeHeader)
+            if (SendOption == SendOption.None)
             {
-                switch (msg.SendOption)
-                {
-                    case SendOption.None:
-                        offset = 1;
-                        break;
-                    case SendOption.Reliable:
-                        offset = 3;
-                        break;
-                }
+                return Length > 1 + expected;
             }
 
-            this.Write(msg.Buffer, offset, msg.Length - offset);
+            return Length > 3 + expected;
         }
 
-        public unsafe static bool IsLittleEndian()
+        public byte[] ToByteArray(bool includeHeader)
         {
-            byte b;
-            unsafe
+            if (includeHeader)
             {
-                int i = 1;
-                byte* bp = (byte*)&i;
-                b = *bp;
+                return Data.ToArray();
             }
 
-            return b == 1;
+            return SendOption switch
+            {
+                SendOption.Reliable => Data.Slice(3).ToArray(),
+                SendOption.None => Data.Slice(1).ToArray(),
+                _ => throw new NotImplementedException()
+            };
         }
 
         public void Dispose()
         {
-            Recycle();
+            Console.WriteLine($"Disposing {SendOption}");
+            _memoryOwner.Dispose();
         }
     }
 }
