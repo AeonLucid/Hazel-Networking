@@ -32,15 +32,7 @@ namespace Hazel
 
             Position += length;
 
-            try
-            {
-                return new MessageReader(tag, Buffer.Slice(pos, length));
-            }
-            catch (Exception e)
-            {
-                Console.WriteLine(e);
-                throw;
-            }
+            return new MessageReader(tag, Buffer.Slice(pos, length));
         }
 
         public bool ReadBoolean()

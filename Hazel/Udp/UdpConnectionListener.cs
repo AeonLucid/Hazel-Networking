@@ -1,8 +1,11 @@
 ﻿using System;
+using System.Buffers;
 using System.Collections.Concurrent;
+using System.IO.Pipelines;
 using System.Net;
 using System.Net.Sockets;
 using System.Threading;
+using System.Threading.Channels;
 using System.Threading.Tasks;
 using Serilog;
 
@@ -25,6 +28,8 @@ namespace Hazel.Udp
         public delegate bool AcceptConnectionCheck(IPEndPoint endPoint, byte[] input, out byte[] response);
 
         private readonly UdpClient _socket;
+        private readonly int _maxPacketSize;
+        private readonly MemoryPool<byte> _pool;
         private readonly Timer _reliablePacketTimer;
         private readonly ConcurrentDictionary<EndPoint, UdpServerConnection> _allConnections;
         private readonly CancellationTokenSource _stoppingCts;
@@ -35,12 +40,12 @@ namespace Hazel.Udp
         /// </summary>
         /// <param name="endPoint">The endpoint to listen on.</param>
         /// <param name="ipMode"></param>
-        /// <param name="logger"></param>
         public UdpConnectionListener(IPEndPoint endPoint, IPMode ipMode = IPMode.IPv4)
         {
             EndPoint = endPoint;
             IPMode = ipMode;
 
+            _pool = MemoryPool<byte>.Shared;
             _socket = new UdpClient(endPoint)
             {
                 DontFragment = false
@@ -159,15 +164,32 @@ namespace Hazel.Udp
                         await client.StartAsync();
                     }
 
-                    Console.WriteLine($"{client.EndPoint}: {data.Buffer.Length}");
-
-                    // Write received bytes to the client
-                    await client.Pipeline.Writer.WriteAsync(data.Buffer);
+                    await WriteToClientAsync(client, data.Buffer);
                 }
             }
             catch (Exception e)
             {
                 Logger.Error(e, "Listen loop error");
+            }
+        }
+
+        private async ValueTask WriteToClientAsync(UdpConnection client, ReadOnlyMemory<byte> memory)
+        {
+            // Rent memory.
+            var dest = _pool.Rent(memory.Length);
+
+            // Copy data.
+            memory.CopyTo(dest.Memory);
+
+            try
+            {
+                // Write to client.
+                await client.Pipeline.Writer.WriteAsync(new MessageData(dest, memory.Length));
+            }
+            catch (ChannelClosedException)
+            {
+                // Clean up.
+                dest.Dispose();
             }
         }
 

@@ -2,6 +2,8 @@
 using System.Buffers;
 using System.IO.Pipelines;
 using System.Net.Sockets;
+using System.Threading;
+using System.Threading.Channels;
 using System.Threading.Tasks;
 using Serilog;
 
@@ -17,6 +19,7 @@ namespace Hazel.Udp
 
         private static readonly ILogger Logger = Log.ForContext<UdpConnection>();
         private readonly ConnectionListener _listener;
+        private readonly CancellationTokenSource _stoppingCts;
 
         private bool _isDisposing;
         private bool _isFirst = true;
@@ -25,10 +28,16 @@ namespace Hazel.Udp
         protected UdpConnection(ConnectionListener listener)
         {
             _listener = listener;
-            Pipeline = new Pipe();
+            _stoppingCts = new CancellationTokenSource();
+
+            Pipeline = Channel.CreateUnbounded<MessageData>(new UnboundedChannelOptions
+            {
+                SingleReader = true,
+                SingleWriter = true
+            });
         }
 
-        internal Pipe Pipeline { get; }
+        internal Channel<MessageData> Pipeline { get; }
 
         public Task StartAsync()
         {
@@ -53,8 +62,11 @@ namespace Hazel.Udp
                 return;
             }
 
+            // Signal cancellation to methods.
+            _stoppingCts.Cancel();
+
             // Cancel reader.
-            Pipeline.Reader.CancelPendingRead();
+            Pipeline.Writer.Complete();
 
             // Remove references.
             if (!_isDisposing)
@@ -65,27 +77,14 @@ namespace Hazel.Udp
 
         private async Task ReadAsync()
         {
-            while (true)
+            // Read loop.
+            while (!_stoppingCts.IsCancellationRequested)
             {
-                var result = await Pipeline.Reader.ReadAsync();
-                if (result.IsCanceled)
-                {
-                    // The read was canceled.
-                    break;
-                }
+                var result = await Pipeline.Reader.ReadAsync(_stoppingCts.Token);
 
                 try
                 {
-                    if (!result.Buffer.IsSingleSegment)
-                    {
-                        Console.WriteLine("Not result.Buffer.IsSingleSegment");
-                    }
-
-                    Console.WriteLine($"{EndPoint}: {result.Buffer.Length} ({result.Buffer.Start.GetInteger()} - {result.Buffer.End.GetInteger()})");
-
-                    await HandleReceive(new MessageReader(result.Buffer.IsSingleSegment
-                        ? result.Buffer.First
-                        : result.Buffer.ToArray()));
+                    await HandleReceive(new MessageReader(result.Buffer));
                 }
                 catch (Exception e)
                 {
@@ -95,8 +94,14 @@ namespace Hazel.Udp
                 }
                 finally
                 {
-                    Pipeline.Reader.AdvanceTo(result.Buffer.End, result.Buffer.End);
+                    result.Return();
                 }
+            }
+
+            // Exhaust pipeline.
+            while (Pipeline.Reader.TryRead(out var mem))
+            {
+                mem.Return();
             }
         }
 
@@ -104,6 +109,7 @@ namespace Hazel.Udp
         ///     Writes the given bytes to the connection.
         /// </summary>
         /// <param name="bytes">The bytes to write.</param>
+        /// <param name="length"></param>
         protected abstract ValueTask WriteBytesToConnection(byte[] bytes, int length);
 
         /// <inheritdoc/>
