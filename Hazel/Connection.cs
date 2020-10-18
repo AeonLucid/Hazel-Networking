@@ -192,7 +192,8 @@ namespace Hazel
                 }
                 catch (Exception e)
                 {
-                    Logger.Error(e, "Error in InvokeDataReceived");
+                    Logger.Error(e, "Invoking data received failed");
+                    await Disconnect("Invoking data received failed");
                 }
             }
         }

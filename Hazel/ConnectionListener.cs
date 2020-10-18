@@ -81,7 +81,8 @@ namespace Hazel
                 }
                 catch (Exception e)
                 {
-                    Logger.Error(e, "Error in InvokeNewConnection");
+                    Logger.Error(e, "Accepting connection failed");
+                    await connection.Disconnect("Accepting connection failed");
                 }
             }
         }
